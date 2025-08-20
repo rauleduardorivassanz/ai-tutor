@@ -5,9 +5,10 @@ import { useState, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Send, Mic, MicOff, BookOpen, Lightbulb, Highlighter } from "lucide-react"
+import { Send, Mic, MicOff, BookOpen, Lightbulb, Highlighter, Volume2, VolumeX } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
 import type { Annotation } from "./pdf-viewer"
+import { voiceService } from "@/lib/voice-service"
 
 interface EnhancedChatInterfaceProps {
   documentId: string
@@ -37,6 +38,8 @@ export function EnhancedChatInterface({
   const [input, setInput] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [isListening, setIsListening] = useState(false)
+  const [isSpeaking, setIsSpeaking] = useState(false)
+  const [voiceSupported, setVoiceSupported] = useState(false)
   const [chatId, setChatId] = useState(currentChat?.id)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
 
@@ -45,6 +48,10 @@ export function EnhancedChatInterface({
       scrollAreaRef.current.scrollTop = scrollAreaRef.current.scrollHeight
     }
   }, [messages])
+
+  useEffect(() => {
+    setVoiceSupported(voiceService.isVoiceSupported())
+  }, [])
 
   const handleSendMessage = async () => {
     if (!input.trim() || isLoading) return
@@ -88,7 +95,13 @@ export function EnhancedChatInterface({
         setMessages((prev) => [...prev, aiMessage])
         setChatId(data.chatId)
 
-        // Handle page navigation and annotations
+        if (voiceSupported && data.content) {
+          setIsSpeaking(true)
+          voiceService.speak(data.content, () => {
+            setIsSpeaking(false)
+          })
+        }
+
         if (data.pageNumber) {
           onPageChange(data.pageNumber)
         }
@@ -112,7 +125,6 @@ export function EnhancedChatInterface({
       }
     } catch (error) {
       console.error("Chat error:", error)
-      // Add error message
       const errorMessage = {
         id: Date.now().toString(),
         content: "Sorry, I encountered an error. Please try again.",
@@ -135,9 +147,44 @@ export function EnhancedChatInterface({
   }
 
   const toggleVoiceInput = () => {
-    setIsListening(!isListening)
-    // Voice input implementation would go here
-    // For now, just toggle the state
+    if (!voiceSupported) {
+      alert("Voice input is not supported in your browser")
+      return
+    }
+
+    if (isListening) {
+      voiceService.stopListening()
+      setIsListening(false)
+    } else {
+      setIsListening(true)
+      voiceService.startListening(
+        (transcript) => {
+          setInput(transcript)
+          setIsListening(false)
+        },
+        (error) => {
+          console.error("Voice input error:", error)
+          setIsListening(false)
+          alert("Voice input failed. Please try again.")
+        },
+        () => {
+          setIsListening(false)
+        },
+      )
+    }
+  }
+
+  const toggleSpeech = () => {
+    if (isSpeaking) {
+      voiceService.stopSpeaking()
+      setIsSpeaking(false)
+    } else {
+      const lastAiMessage = [...messages].reverse().find((msg) => msg.role === "assistant")
+      if (lastAiMessage) {
+        setIsSpeaking(true)
+        voiceService.speak(lastAiMessage.content, () => setIsSpeaking(false))
+      }
+    }
   }
 
   const handleQuickQuestion = (question: string) => {
@@ -153,16 +200,17 @@ export function EnhancedChatInterface({
 
   return (
     <div className="h-full flex flex-col bg-card">
-      {/* Chat Header */}
       <div className="border-b px-4 py-3">
         <h2 className="font-semibold flex items-center gap-2">
           <BookOpen className="h-4 w-4 text-primary" />
           AI Tutor Chat
+          {voiceSupported && (
+            <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded-full">Voice Enabled</span>
+          )}
         </h2>
         <p className="text-sm text-muted-foreground">Ask questions and get visual annotations</p>
       </div>
 
-      {/* Messages */}
       <ScrollArea className="flex-1 p-4" ref={scrollAreaRef}>
         <div className="space-y-4">
           {messages.length === 0 ? (
@@ -195,9 +243,8 @@ export function EnhancedChatInterface({
                 >
                   <p className="text-sm leading-relaxed">{message.content}</p>
 
-                  {/* Action buttons for AI messages */}
-                  {message.role === "assistant" && (message.pageNumber || message.annotations) && (
-                    <div className="mt-3 pt-2 border-t border-current/20 flex gap-2">
+                  {message.role === "assistant" && (message.pageNumber || message.annotations || voiceSupported) && (
+                    <div className="mt-3 pt-2 border-t border-current/20 flex gap-2 flex-wrap">
                       {message.pageNumber && (
                         <Button
                           variant="ghost"
@@ -216,6 +263,20 @@ export function EnhancedChatInterface({
                         >
                           <Highlighter className="h-3 w-3" />
                           Annotations added
+                        </Button>
+                      )}
+                      {voiceSupported && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setIsSpeaking(true)
+                            voiceService.speak(message.content, () => setIsSpeaking(false))
+                          }}
+                          className="text-xs h-auto p-2 text-current hover:bg-current/10 gap-1"
+                        >
+                          <Volume2 className="h-3 w-3" />
+                          Speak
                         </Button>
                       )}
                     </div>
@@ -241,30 +302,49 @@ export function EnhancedChatInterface({
         </div>
       </ScrollArea>
 
-      {/* Input */}
       <div className="border-t p-4">
         <div className="flex gap-2">
           <Input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyPress={handleKeyPress}
-            placeholder="Ask a question to get visual annotations..."
-            disabled={isLoading}
+            placeholder={isListening ? "Listening..." : "Ask a question to get visual annotations..."}
+            disabled={isLoading || isListening}
             className="flex-1"
           />
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={toggleVoiceInput}
-            className={isListening ? "bg-primary text-primary-foreground" : ""}
-            title="Voice input"
-          >
-            {isListening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-          </Button>
+          {voiceSupported && (
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={toggleVoiceInput}
+              className={isListening ? "bg-primary text-primary-foreground animate-pulse" : ""}
+              title={isListening ? "Stop listening" : "Start voice input"}
+              disabled={isLoading}
+            >
+              {isListening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+            </Button>
+          )}
+          {voiceSupported && (
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={toggleSpeech}
+              className={isSpeaking ? "bg-secondary text-secondary-foreground" : ""}
+              title={isSpeaking ? "Stop speaking" : "Speak last response"}
+              disabled={isLoading || messages.filter((m) => m.role === "assistant").length === 0}
+            >
+              {isSpeaking ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+            </Button>
+          )}
           <Button onClick={handleSendMessage} disabled={!input.trim() || isLoading} size="icon">
             <Send className="h-4 w-4" />
           </Button>
         </div>
+        {isListening && (
+          <div className="mt-2 text-center">
+            <span className="text-xs text-primary animate-pulse">🎤 Listening... Speak now</span>
+          </div>
+        )}
       </div>
     </div>
   )
